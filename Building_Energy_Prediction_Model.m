@@ -1,120 +1,129 @@
 clear; clc; close all;
 
-%% 1. DATA LOADING & PREPROCESSING
-disp('--- Step 1: Loading and Preprocessing Data ---');
-
-% Load training and testing datasets using standard readtable function
 trainData = readtable('train.csv');
 testData = readtable('test.csv');
 
-% Identify categorical columns and convert them to categorical datatype
+trainData.source = repmat({'train'}, height(trainData), 1);
+testData.source = repmat({'test'}, height(testData), 1);
+testData.site_eui = nan(height(testData), 1);
+df = [trainData; testData];
+
 catCols = {'State_Factor', 'building_class', 'facility_type'};
 for i = 1:length(catCols)
-    if ismember(catCols{i}, trainData.Properties.VariableNames)
-        trainData.(catCols{i}) = categorical(trainData.(catCols{i}));
-    end
-    if ismember(catCols{i}, testData.Properties.VariableNames)
-        testData.(catCols{i}) = categorical(testData.(catCols{i}));
-    end
+    df.(catCols{i}) = categorical(df.(catCols{i}));
 end
 
-% Handle missing values in numeric columns by imputing with the median
-numVars = trainData.Properties.VariableNames(~ismember(trainData.Properties.VariableNames, [catCols, {'site_eui', 'id'}]));
+sortCols = {'State_Factor', 'building_class', 'facility_type', 'floor_area', 'year_built', 'Year_Factor'};
+df = sortrows(df, sortCols);
+
+minTempCols = df.Properties.VariableNames(contains(df.Properties.VariableNames, 'min_temp'));
+maxTempCols = df.Properties.VariableNames(contains(df.Properties.VariableNames, 'max_temp'));
+avgTempCols = df.Properties.VariableNames(contains(df.Properties.VariableNames, 'avg_temp'));
+
+df.min_temp1 = min(df{:, minTempTempColIndices(minTempCols, df)}, [], 2);
+df.max_temp1 = min(df{:, maxTempCols}, [], 2);
+df.avg_temp1 = min(df{:, avgTempCols}, [], 2);
+
+df.min_temp2 = max(df{:, minTempCols}, [], 2);
+df.max_temp2 = max(df{:, maxTempCols}, [], 2);
+df.avg_temp2 = max(df{:, avgTempCols}, [], 2);
+
+df.min_temp3 = mean(df{:, minTempCols}, 2);
+df.max_temp3 = mean(df{:, maxTempCols}, 2);
+df.avg_temp3 = mean(df{:, avgTempCols}, 2);
+
+df.min_temp4 = std(df{:, minTempCols}, 0, 2);
+df.max_temp4 = std(df{:, maxTempCols}, 0, 2);
+df.avg_temp4 = std(df{:, avgTempCols}, 0, 2);
+
+df.min_temp5 = skewness(df{:, minTempCols}, 0, 2);
+df.max_temp5 = skewness(df{:, maxTempCols}, 0, 2);
+df.avg_temp5 = skewness(df{:, avgTempCols}, 0, 2);
+
+groupKeys = {'State_Factor', 'building_class', 'facility_type', 'floor_area', 'year_built'};
+
+for i = 1:3
+    lagNameEUI = sprintf('site_eui_lag%d', i);
+    lagNameYear = sprintf('Year_Factor_lag%d', i);
+    lagNameEnergy = sprintf('energy_star_rating_lag%d', i);
+    lagNameElev = sprintf('ELEVATION_lag%d', i);
+   
+    df.(lagNameEUI) = groupedLag(df, groupKeys, 'site_eui', i);
+    df.(lagNameYear) = groupedLag(df, groupKeys, 'Year_Factor', i);
+    df.(lagNameEnergy) = groupedLag(df, groupKeys, 'energy_star_rating', i);
+    df.(lagNameElev) = groupedLag(df, groupKeys, 'ELEVATION', i);
+   
+    elevFloorName = sprintf('ELEVATION_FLOOR_lag%d', i);
+    elevFloorBName = sprintf('ELEVATION_FLOORB_lag%d', i);
+    df.(elevFloorName) = df.(lagNameElev) .* df.floor_area;
+    df.(elevFloorBName) = df.(lagNameElev) ./ df.floor_area;
+   
+    deltaEnergyName = sprintf('delta_energy%d', i);
+    deltaEnergyBName = sprintf('delta_energy%d_B', i);
+    deltaEUIBName = sprintf('site_eui%dB', i);
+    deltaEUICName = sprintf('site_eui%dC', i);
+   
+    validEnergy = ~isnan(df.energy_star_rating) & ~isnan(df.(lagNameEnergy));
+    df.(deltaEnergyName) = nan(height(df), 1);
+    df.(deltaEnergyName)(validEnergy) = (df.energy_star_rating(validEnergy) - df.(lagNameEnergy)(validEnergy)) ./ df.energy_star_rating(validEnergy);
+   
+    df.(deltaEnergyBName) = nan(height(df), 1);
+    df.(deltaEnergyBName)(validEnergy) = df.energy_star_rating(validEnergy) - df.(lagNameEnergy)(validEnergy);
+   
+    validEUIB = ~isnan(df.(lagNameEUI)) & ~isnan(df.(deltaEnergyBName));
+    df.(deltaEUIBName) = nan(height(df), 1);
+    df.(deltaEUIBName)(validEUIB) = df.(lagNameEUI)(validEUIB) .* df.(deltaEnergyBName)(validEUIB);
+   
+    validEUIC = ~isnan(df.(lagNameEUI)) & ~isnan(df.(deltaEUIBName));
+    df.(deltaEUICName) = nan(height(df), 1);
+    df.(deltaEUICName)(validEUIC) = df.(lagNameEUI)(validEUIC) - df.(deltaEUIBName)(validEUIC);
+end
+
+df.ELEVATION_FLOOR = df.ELEVATION .* df.floor_area;
+df.ELEVATION_FLOORB = df.ELEVATION ./ df.floor_area;
+
+numVars = df.Properties.VariableNames(~ismember(df.Properties.VariableNames, [catCols, {'site_eui', 'id', 'source'}]));
 for i = 1:length(numVars)
-    colName = numVars{i};
-    if any(ismissing(trainData.(colName)))
-        trainData.(colName) = fillmissing(trainData.(colName), 'median');
-    end
-    if ismember(colName, testData.Properties.VariableNames) && any(ismissing(testData.(colName)))
-        testData.(colName) = fillmissing(testData.(colName), 'median');
+    col = numVars{i};
+    if any(ismissing(df.(col)))
+        df.(col) = fillmissing(df.(col), 'median');
     end
 end
 
-% Separate features (X) and target (Y) from training data
-X = trainData(:, ~ismember(trainData.Properties.VariableNames, {'site_eui', 'id'}));
-Y = trainData.site_eui;
+X = df(strcmp(df.source, 'train'), ~ismember(df.Properties.VariableNames, {'site_eui', 'id', 'source'}));
+Y = df.site_eui(strcmp(df.source, 'train'));
 
-% Partition data into Training (80%) and Testing (20%) sets using cvpartition
-cv = cvpartition(height(trainData), 'HoldOut', 0.2);
-trainIdx = training(cv);
-testIdx = test(cv);
+t = templateTree('MaxNumSplits', 80, 'MinLeafSize', 5, 'Surrogate', 'on');
+model = fitrensemble(X, Y, 'Method', 'LSBoost', 'NumLearningCycles', 200, 'LearnRate', 0.05, 'Learners', t);
 
-XTrain = X(trainIdx, :);
-YTrain = Y(trainIdx);
-XTestSet = X(testIdx, :);
-YTestSet = Y(testIdx);
-
-fprintf('Data preprocessing complete.\nTraining set size: %d rows\nTesting set size: %d rows\n\n', ...
-    height(XTrain), height(XTestSet));
-
-%% 2. MODEL TRAINING (HIGH-ACCURACY BOOSTED TREES)
-disp('--- Step 2: Model Training (Gradient Boosting) ---');
-
-% Configure deeper base trees for complex feature interactions
-t = templateTree('MaxNumSplits', 60, 'MinLeafSize', 5);
-
-% Train an optimized Gradient Boosted Ensemble (LSBoost) for superior accuracy
-% Note: 'Verbose' has been removed to ensure compatibility across MATLAB versions.
-model = fitrensemble(XTrain, YTrain, ...
-    'Method', 'LSBoost', ...
-    'NumLearningCycles', 150, ...
-    'LearnRate', 0.1, ...
-    'Learners', t);
-
-disp('Model training complete.');
-
-%% 3. MODEL EVALUATION & TEST PREDICTION
-disp('--- Step 3: Model Evaluation and Test Prediction ---');
-
-% Predict outcomes on the test partition dataset
-YPred = predict(model, XTestSet);
-
-% Calculate regression evaluation metrics (RMSE, MAE, R-squared)
-rmseVal = sqrt(mean((YTestSet - YPred).^2));
-maeVal = mean(abs(YTestSet - YPred));
-ssRes = sum((YTestSet - YPred).^2);
-ssTot = sum((YTestSet - mean(YTestSet)).^2);
-rSquared = 1 - (ssRes / ssTot);
-
-fprintf('\n--- Test Set Performance Metrics ---\n');
-fprintf('Root Mean Squared Error (RMSE): %.4f\n', rmseVal);
-fprintf('Mean Absolute Error (MAE):      %.4f\n', maeVal);
-fprintf('R-Squared (R^2):                %.4f\n\n', rSquared);
-
-% Generate evaluation plots
-figure('Name', 'Regression Model Evaluation', 'Position', [100, 100, 1100, 450]);
-
-% Plot 1: Actual vs. Predicted Scatter Plot
-subplot(1, 2, 1);
-scatter(YTestSet, YPred, 15, 'filled', 'MarkerFaceAlpha', 0.5);
-hold on;
-lims = [min([YTestSet; YPred]), max([YTestSet; YPred])];
-plot(lims, lims, 'r--', 'LineWidth', 1.5);
-xlabel('Actual Site EUI');
-ylabel('Predicted Site EUI');
-title('Actual vs. Predicted Site EUI');
-grid on;
-
-% Plot 2: Residual Plot
-subplot(1, 2, 2);
-residuals = YTestSet - YPred;
-scatter(YPred, residuals, 15, 'filled', 'MarkerFaceAlpha', 0.5);
-hold on;
-yline(0, 'r--', 'LineWidth', 1.5);
-xlabel('Predicted Site EUI');
-ylabel('Residuals (Actual - Predicted)');
-title('Residual Plot');
-grid on;
-
-% Predict on the external 'test.csv' dataset
-XTestFinal = testData(:, ~ismember(testData.Properties.VariableNames, {'id'}));
+XTestFinal = df(strcmp(df.source, 'test'), ~ismember(df.Properties.VariableNames, {'site_eui', 'id', 'source'}));
 testPredictions = predict(model, XTestFinal);
 
-% Save test predictions to a CSV file
-if ismember('id', testData.Properties.VariableNames)
-    resultsTable = table(testData.id, testPredictions, 'VariableNames', {'id', 'site_eui'});
+testSubset = df(strcmp(df.source, 'test'), :);
+if ismember('id', testSubset.Properties.VariableNames)
+    resultsTable = table(testSubset.id, testPredictions, 'VariableNames', {'id', 'site_eui'});
 else
-    resultsTable = table((1:height(testData))', testPredictions, 'VariableNames', {'id', 'site_eui'});
+    resultsTable = table((1:height(testSubset))', testPredictions, 'VariableNames', {'id', 'site_eui'});
 end
-writetable(resultsTable, 'sample_solution.csv');
-disp('Test predictions successfully generated and saved to "test_predictions.csv".');
+
+writetable(resultsTable, 'test_predictions.csv');
+
+function lagVals = groupedLag(T, groupCols, targetCol, n)
+    [G, ID] = findgroups(T(:, groupCols));
+    target = T.(targetCol);
+    lagVals = nan(height(T), 1);
+    for k = 1:max(G)
+        idx = (G == k);
+        vals = target(idx);
+        if length(vals) > n
+            lagVals(idx) = [nan(n, 1); vals(1:end-n)];
+        end
+    end
+end
+
+function idxs = minTempTempColIndices(names, T)
+    idxs = false(1, width(T));
+    for i = 1:length(names)
+        idxs(strcmp(T.Properties.VariableNames, names{i})) = true;
+    end
+end
